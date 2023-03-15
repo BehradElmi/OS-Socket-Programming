@@ -12,19 +12,23 @@
 
 #define SERVER_ADDRESS "127.0.0.1"
 #define SERVER_BROADCAST "127.255.255.255"
-#define DEFAULT_SERVER_PORT 8090
+#define DEFAULT_SERVER_PORT 11000
 #define BUFFER_SIZE 1024
 #define RECIEVE_ERROR "Error On Reading From the Server"
-#define PATTERN "$$$"
+#define CHAT_PATTERN "$$$"
+#define SPECT_PATTERN "&&&"
 #define EXIT_PAT "exit\n"
+#define SO_REUSEPORT 15
 
 int connect_server(int port);
 
 void recieved_handler(char* buffer, int num_of_bytes);
 
-int port_pattern(char* buffer);
+int port_pattern(const char* buffer);
 
 void room_communication(int port, int serverFD);
+
+void spect_opt(int port);
 
 int main(int argc, char* argv)
 {
@@ -86,7 +90,16 @@ void recieved_handler(char* buffer, int num_of_bytes)
         }
         else
         {
-            room_communication(port, 3);
+            // inefficient implementation but don't have time
+            if(strncmp(buffer, CHAT_PATTERN, strlen(CHAT_PATTERN))
+             == 0)
+            {
+                room_communication(port, 3);
+            }
+            else
+            {
+                spect_opt(port);
+            }   
         }
     }
     else 
@@ -99,13 +112,25 @@ void recieved_handler(char* buffer, int num_of_bytes)
     }
 }
 
-int port_pattern(char* buffer)
+int port_pattern(const char* buffer)
 {
-    if(strncmp(buffer, PATTERN, strlen(PATTERN)) == 0)
+    if(strncmp(buffer, CHAT_PATTERN,
+         strlen(CHAT_PATTERN)) == 0)
     {
-        char* token = strtok(buffer, PATTERN);
+        char temp[BUFFER_SIZE];
+        strcpy(temp, buffer);
+        char* token = strtok(temp, CHAT_PATTERN);
         int port = atoi(token);
         return port;
+    }
+    if(strncmp(buffer, SPECT_PATTERN, strlen(SPECT_PATTERN))
+        == 0)
+    {
+        char stemp[BUFFER_SIZE];
+        strcpy(stemp, buffer);
+        char* stoken = strtok(stemp, SPECT_PATTERN);
+        int spport = atoi(stoken); 
+        return spport;
     }
     return 0;
 }
@@ -125,10 +150,15 @@ void room_communication(int port, int serverFD)
     int broadcast = 1;
     if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
         sizeof(broadcast)) < 0)
-        {
+    {
             perror("error setsocketopt broadcast");
-        }
+    }
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
+        sizeof(broadcast)) < 0)
+    {
+        perror("error setsocket reuse");
+    }
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &broadcast,
         sizeof(broadcast)) < 0)
     {
         perror("error setsocket reuse");
@@ -189,3 +219,54 @@ void room_communication(int port, int serverFD)
         }
     }
 }   
+
+void spect_opt(int port)
+{   
+    // setting up socket should've been a separate function
+    // no time though
+    struct sockaddr_in sock_adr;
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if(socket < 0)
+    {
+        perror("error socket");
+    }
+    // broadcast specs:
+    sock_adr.sin_port = htons(port);
+    sock_adr.sin_family = AF_INET;
+    sock_adr.sin_addr.s_addr = inet_addr(SERVER_BROADCAST);
+    int broadcast = 1;
+    if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
+        sizeof(broadcast)) < 0)
+    {
+            perror("error setsocketopt broadcast");
+    }
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
+        sizeof(broadcast)) < 0)
+    {
+        perror("error setsocket reuse");
+    }
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &broadcast,
+        sizeof(broadcast)) < 0)
+    {
+        perror("error setsocket reuse");
+    }
+    if(bind(sock, (const struct sockaddr*) &sock_adr, 
+        (socklen_t)sizeof(sock_adr)) < 0)
+    {
+        perror("error binding");
+    }
+    char b_buf[BUFFER_SIZE];
+    int sock_adr_len = sizeof(sock_adr);
+    memset(b_buf, 0, BUFFER_SIZE);
+    while(1)
+    {
+        int bytes = recvfrom(sock, b_buf, BUFFER_SIZE, 0
+        , (struct sockaddr*)&sock_adr, (socklen_t*)&sock_adr_len);
+        if(bytes <= 0)
+        {
+            perror("recv error");
+        }
+        write(1, b_buf, strlen(b_buf));
+        memset(b_buf, 0, BUFFER_SIZE);
+    }
+}
