@@ -59,7 +59,13 @@
 #define NOW_IN_ROOM "You are now in room:\nChat:\n" 
 #define EXIT_PAT "exit\n"
 #define STUDENT_ANSWER "What was the answer to your question?\n"
-#define NO_IN_SESSION "There are no in session rooms at this time"
+#define NO_IN_SESSION "There are no in session rooms at this time\n"
+#define QUESTION_FILE "question.txt"
+#define LOG_FILE "log.txt"
+#define REGISTERED_ANSWER "Your Answer has been Registered\n"
+#define EXIT_SIG "$@&^()+$#"
+
+
 
 enum Role
 {
@@ -190,6 +196,11 @@ void broadcast_message(Rm* rm_set, Qst* q_set, int fd, const char* buffer,
 
 int show_insession_rooms(int fd, Rm* rm_set, Qst* q_set);
 
+void register_answer(const char* buffer, int s_fd, Qst* q_set);
+
+void close_question(int s_fd, Qst* q_set, Rm* rm_set,
+    Cli* cli_set);
+
 static int qID = 0;
 
 int main(int argc, char* argv)
@@ -269,8 +280,9 @@ void run_server(int serverFD, Qst* qst_set, Cli* cli_set,
                         max_sd = new_socket;
                     }
                 }
-                else if(i > serverFD && i < serverFD+MAX_ROOM)
+                else if(i > serverFD && i < serverFD+MAX_ROOM+1)
                 {
+                    recv(i, buffer, strlen(buffer), 0);
                     break;// DO nothing
                 }
                 else // Listen to Client
@@ -302,7 +314,7 @@ void manage_client(int serverFD, int client_fd,
     int number_of_bytes = recv(client_fd, buffer, BUFFER_SIZE, 0);
     if(number_of_bytes == 0)
     {
-        int log = open("log.txt", O_APPEND, O_CREAT);
+        int log = open(LOG_FILE, O_APPEND | O_RDWR| O_CREAT);
         write(log, &client_fd, sizeof(client_fd));
         write(log, CLIENT_CLOSED, strlen(CLIENT_CLOSED));
         close(log);
@@ -337,7 +349,7 @@ void role_handler(int fd, Cli* cli_set, const char* buffer,
         else
         {
             perror(UKNOWN_OPTION);
-            int log = open("log.txt", O_APPEND, O_CREAT);
+            int log = open(LOG_FILE, O_APPEND | O_RDWR| O_CREAT);
             write(log, UKNOWN_OPTION, strlen(UKNOWN_OPTION));
             close(log);   
         }
@@ -353,7 +365,7 @@ void role_handler(int fd, Cli* cli_set, const char* buffer,
     else
     {
         perror(UKNOWN_STAT);
-        int log = open("log.txt", O_APPEND, O_CREAT);
+        int log = open(LOG_FILE, O_APPEND | O_RDWR| O_CREAT);
         write(log, UKNOWN_STAT, strlen(UKNOWN_STAT));
         close(log);   
     }
@@ -420,7 +432,7 @@ void TA_handler(int t_fd, Cli* cli_set, Qst* qst_set,
     }
     else if(cli_set[t_fd].usr_stat == QUESTION_ANSWERED)
     {
-        // exit ta / close
+        send(t_fd, EXIT_SIG, strlen(EXIT_SIG), 0);
     }
 }
 
@@ -513,10 +525,14 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
     }
     else if(cli_set[s_fd].usr_stat == QUESTION_ANSWERED)
     {
-        // MENU
+        int ta_fd = return_taf_from_stf(qst_set, s_fd);
+        register_answer(buffer, s_fd, qst_set); // SAVE QUESTION AND ANSWER INTO FILE
         // CLOSE QUESTION
         // CLOSE ROOM
-        // SAVE QUESTION AND ANSWER INTO FILE
+        close_question(s_fd, qst_set, rm_set, cli_set);
+        send(s_fd, REGISTERED_ANSWER, strlen(REGISTERED_ANSWER), 0);
+        send(s_fd, EXIT_SIG, strlen(EXIT_SIG), 0);
+        send(ta_fd, EXIT_SIG, strlen(EXIT_SIG), 0);
     }
 }
 
@@ -821,4 +837,35 @@ int show_insession_rooms(int fd, Rm* rm_set, Qst* q_set)
         }
     }
     return flag;
+}
+
+void register_answer(const char* buffer, int s_fd, Qst* q_set)
+{
+    int open_fd = open(QUESTION_FILE, O_APPEND | O_RDWR| O_CREAT);
+    char question[QUESTION_LENGTH+19];
+    sprintf(question, "Question was: %s\n", 
+        q_set[return_qID_from_fd(s_fd, q_set)].question);
+    write(open_fd,  question, strlen(question));
+    char answer[BUFFER_SIZE+15+20];
+    sprintf(answer, "Answer: %s\n%s", buffer, DELIM);
+    write(open_fd, answer, strlen(answer));
+    close(open_fd);
+}
+
+void close_question(int s_fd, Qst* q_set, Rm* rm_set,
+    Cli* cli_set)
+{
+    int q_index = return_qID_from_fd(s_fd, q_set);
+    q_set[q_index].q_stat = ANSWERED;
+    q_set[q_index].st_fd = -1;
+    q_set[q_index].st_fd = -1;
+    int rm_index = return_room_from_fd(s_fd, rm_set)->port
+    -DEFAULT_SERVER_PORT-1;
+    rm_set[rm_index].qst_in_room = -1;
+    rm_set[rm_index].rm_stat = UNUSED;
+    rm_set[rm_index].student_fd = -1;
+    rm_set[rm_index].ta_fd = -1;
+    cli_set[s_fd].usr_stat = QUESTION_ANSWERED;
+    cli_set[return_taf_from_stf(q_set, s_fd)].usr_stat =
+        QUESTION_ANSWERED;
 }
