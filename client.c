@@ -118,6 +118,7 @@ void room_communication(int port, int serverFD)
     {
         perror("error socket");
     }
+    // broadcast specs:
     sock_adr.sin_port = htons(port);
     sock_adr.sin_family = AF_INET;
     sock_adr.sin_addr.s_addr = inet_addr(SERVER_BROADCAST);
@@ -132,7 +133,7 @@ void room_communication(int port, int serverFD)
     {
         perror("error setsocket reuse");
     }
-    if (bind(sock, (const struct sockaddr*) &sock_adr, 
+    if(bind(sock, (const struct sockaddr*) &sock_adr, 
         (socklen_t)sizeof(sock_adr)) < 0)
     {
         perror("error binding");
@@ -144,6 +145,7 @@ void room_communication(int port, int serverFD)
     FD_ZERO(&master);
     FD_SET(0, &master);
     FD_SET(sock, &master);
+    FD_SET(serverFD, &master);
     while(1)
     {
         memset(b_buf, 0, BUFFER_SIZE);
@@ -158,12 +160,13 @@ void room_communication(int port, int serverFD)
             read(0, b_buf, BUFFER_SIZE);
             if(strcmp(b_buf, EXIT_PAT) == 0)
             {
-                send(serverFD, "", sizeof(""), 0); // trigger server
+                send(serverFD, EXIT_PAT, strlen(EXIT_PAT), 0); // trigger server
                 return;
             }
-            int sch = sendto(sock, b_buf, strlen(b_buf), 0,
-             (const struct sockaddr*)&sock_adr,
-                sizeof(sock_adr));
+            // int sch = sendto(serverFD, b_buf, strlen(b_buf), 0, // send to server instead of broadcasting in the first place causing problems
+            //  (const struct sockaddr*)&sock_adr,
+            //     sizeof(sock_adr));
+            int sch = send(serverFD, b_buf, strlen(b_buf), 0);
             if(sch <= 0)
             {
                 perror("send problem");
