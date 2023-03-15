@@ -21,13 +21,14 @@
 // setup a room
 // broadcast
 
-#define DEFAULT_SERVER_PORT 10000
+#define DEFAULT_SERVER_PORT 11000
 #define MAX_CLIENT 50
 #define SERVER_BROADCAST "127.255.255.255"
 #define MAX_QUESTION 100
 #define BUFFER_SIZE 1024
 #define QUESTION_LENGTH 256
 #define MAX_ROOM 20
+#define SO_REUSEPORT 15 // grep -r SO_REUSEPORT /usr/include/
 #define SERVER_UP "Server UP!\n"
 #define NEW_CLIENT "New Client!\n"
 #define CHOOSE_ROLE "Please Enter Your Role\n1)TA\n2)Student\n"
@@ -53,10 +54,12 @@
 #define TA_ACCEPTED "a TA has accepted your request, please choose from the rooms\n"
 #define ROOM_NOT_VALID "The room you entered is not valid, please enter another one from available rooms\n"
 #define NOT_VALID_ROOM "The"
-#define PATTERN "$$$"
+#define CHAT_PATTERN "$$$"
+#define SPECT_PATTERN "&&&"
 #define NOW_IN_ROOM "You are now in room:\nChat:\n" 
 #define EXIT_PAT "exit\n"
 #define STUDENT_ANSWER "What was the answer to your question?\n"
+#define NO_IN_SESSION "There are no in session rooms at this time"
 
 enum Role
 {
@@ -170,7 +173,8 @@ int return_taf_from_stf(Qst* q_set, int sfd);
 
 int return_qID_from_fd(int fd, Qst* q_set);
 
-void send_pattern(int s_fd, Qst* q_set, int port);
+void send_pattern(int s_fd, Qst* q_set, int port,
+    const char* pattern);
 
 void setup_room_broadcast(struct sockaddr_in* sockadr, int port, 
     int sock);
@@ -183,6 +187,8 @@ enum Role return_role_from_fd(int fd, Cli* cli_set);
 
 void broadcast_message(Rm* rm_set, Qst* q_set, int fd, const char* buffer, 
     Cli* cli_set);
+
+int show_insession_rooms(int fd, Rm* rm_set, Qst* q_set);
 
 static int qID = 0;
 
@@ -203,19 +209,22 @@ int setup_server(int port)
     int serverFD;
     int opt = 1;
     serverFD = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt(serverFD, SOL_SOCKET, SO_REUSEADDR, &opt,
-    (socklen_t)sizeof(opt));
+    if(setsockopt(serverFD, SOL_SOCKET, SO_REUSEADDR, &opt,
+        sizeof(opt)))
+    {
+        perror("set room socket problem");
+    }
+    if(setsockopt(serverFD, SOL_SOCKET, SO_REUSEPORT, &opt,
+        sizeof(opt)))
+    {
+        perror("set room socket problem");
+    }
     socketAddr.sin_addr.s_addr = INADDR_ANY;
     socketAddr.sin_family = AF_INET;
     socketAddr.sin_port = htons(port);
     bind(serverFD, (const struct sockaddr*)&socketAddr,
         (socklen_t) sizeof(socketAddr));
     listen(serverFD, 12);
-    // +
-    // char temp[100];
-    // sprintf(temp, "server with fd: %d is up\n", serverFD);
-    // write(1, temp, 100);
-    // +
     return serverFD;
 }
 
@@ -230,11 +239,6 @@ int accept_client(int serverFD)
     {
         perror("Error Accepting Connection");
     }
-    // -
-    // char t[14];
-    // sprintf(t, "c accept %d", client_fd);
-    // write(1, t, strlen(t));
-    // -
     return client_fd;
 }
 
@@ -433,7 +437,15 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
         }
         if(strcmp(buffer, STUDENT_SPECT_OPT) == 0)
         {
-            // list of open sessions. refer to description
+            if(show_insession_rooms(s_fd, rm_set, qst_set) <= 0)
+            {
+                send(s_fd, NO_IN_SESSION, strlen(NO_IN_SESSION), 0);
+                send(s_fd, STUDENT_MENU, strlen(STUDENT_MENU), 0);
+            }
+            else
+            {
+                cli_set[s_fd].usr_stat = WATCHING_SESSION;
+            }
         }
     }
     else if(cli_set[s_fd].usr_stat == ASKED_QUESTION)
@@ -446,7 +458,7 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
     {
         if(did_ta_accept(s_fd, qst_set) > 0)
         {
-            // this will be handed from the ta point
+            // this will be handed from the ta side to
             // make a broadcastroom for both of them
             send(s_fd, TA_ACCEPTED, strlen(TA_ACCEPTED), 0);
             cli_set[s_fd].usr_stat = CHOOSE_ROOM;
@@ -471,9 +483,9 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
             send(return_taf_from_stf(qst_set, s_fd), NOW_IN_ROOM,
                 strlen(NOW_IN_ROOM), 0);
             sleep(1);
-            send_pattern(s_fd, qst_set, check_room);
+            send_pattern(s_fd, qst_set, check_room, CHAT_PATTERN);
             send_pattern(return_taf_from_stf(qst_set, s_fd), 
-                qst_set, check_room);
+                qst_set, check_room, CHAT_PATTERN);
             cli_set[s_fd].usr_stat = IN_TALK;
             cli_set[return_taf_from_stf(qst_set, s_fd)].usr_stat = IN_TALK;
         }
@@ -491,7 +503,13 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
     }
     else if(cli_set[s_fd].usr_stat == WATCHING_SESSION)
     {
-        // WATCHING SESSION
+        int chosen_port = atoi(buffer);
+        if(chosen_port <= 0)
+        {
+            perror("bad port");
+            return; // needs more error checking
+        }
+        send_pattern(s_fd, qst_set, chosen_port, SPECT_PATTERN);
     }
     else if(cli_set[s_fd].usr_stat == QUESTION_ANSWERED)
     {
@@ -505,11 +523,6 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
 void add_question_set(const char* buffer,int cli_fd, Qst* qst_set)
 {
     strcpy(qst_set[qID].question, buffer);
-    // +
-    // char temp[300];
-    // sprintf(temp, "Your Question is: %s\nIs it correct?", qst_set[qID].question);
-    // send(cli_fd, temp, strlen(temp), 0);
-    // +
     qst_set[qID].qst_id = qID;
     memset(qst_set[qID].answer, 0, QUESTION_LENGTH);
     qst_set[qID].st_fd = cli_fd;
@@ -537,7 +550,6 @@ int show_question_set(int client_fd, Qst* qst_set)
     if(qID <= 0)
     {
         send(client_fd, NO_QUESTION, strlen(NO_QUESTION), 0);
-        // sleep(0.5);
         send(client_fd, TA_MENU, strlen(TA_MENU), 0); // show TA_MENU again
         return 0;
     }
@@ -561,7 +573,6 @@ int show_question_set(int client_fd, Qst* qst_set)
     if(flag == 0)
     {
         send(client_fd, NO_QUESTION, strlen(NO_QUESTION), 0);
-        // sleep(0.5);
         send(client_fd, TA_MENU, strlen(TA_MENU), 0); // show TA_MENU again
         return 0;
     }
@@ -595,24 +606,10 @@ void assign_ta_student(Cli* cli_set, const char* buffer, int t_fd,
     return;
 }
 
-// void create_room(int ta_fd, int st_fd)
-// {
-//     struct sockaddr_in broad_room;
-//     int broad_socket = socket(AF_INET, SOCK_DGRAM, 0);
-//     // +
-//     char temp[100];
-//     sprintf(temp, "Room with fileD:%d created\n", broad_socket);
-//     write(1, temp, strlen(temp));
-//     // +
-//     broad_room.sin_family = AF_INET;
-//     // broad_room. to be continued get porty from user
-// }
-
 void show_session_lists(int rec_fd, Rm* room_set)
 {
     for(int i = 0; i < MAX_ROOM; i++)
     {
-        // sleep(0.3);
         char each_room[200];
         memset(room_set, 0, sizeof(each_room)/sizeof(each_room));
         if(room_set[i].rm_stat == USED)
@@ -656,12 +653,17 @@ void setup_room_broadcast(struct sockaddr_in* sockadr, int port,
     sockadr->sin_family = AF_INET;
     sockadr->sin_port = htons(port);
     sockadr->sin_addr.s_addr = inet_addr(SERVER_BROADCAST);
+    if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
+        sizeof(broadcast)))
+    {
+        perror("set room socket problem");
+    }
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
         sizeof(broadcast)))
     {
         perror("set room socket problem");
     }
-    if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &broadcast,
         sizeof(broadcast)))
     {
         perror("set room socket problem");
@@ -736,10 +738,11 @@ int return_qID_from_fd(int fd, Qst* q_set)
     return -1;
 }
 
-void send_pattern(int s_fd, Qst* q_set, int port)
+void send_pattern(int s_fd, Qst* q_set, int port,
+    const char* pattern)
 {
     char pat[100];
-    sprintf(pat, "%s%d", PATTERN, port);
+    sprintf(pat, "%s%d", pattern, port);
     send(s_fd, pat, strlen(pat), 0);
     send(return_taf_from_stf(q_set, s_fd), pat, strlen(pat), 0);
 }
@@ -799,4 +802,23 @@ void broadcast_message(Rm* rm_set, Qst* q_set, int fd, const char* buffer,
     sendto(broadcast_room->rm_socket_fd, b_message, strlen(b_message),
         0, (const struct sockaddr*) broadcast_room->rm_broadcast,
         (socklen_t)sizeof(*broadcast_room));
+}
+
+int show_insession_rooms(int fd, Rm* rm_set, Qst* q_set)
+{
+    int flag = 0;
+    char temp[400];
+    for(int i = 0; i < MAX_ROOM; i++)
+    {
+        if(rm_set[i].rm_stat == USED)
+        {
+            sprintf(temp,
+            "Question#%d, Asked by Student#%d\nQuestion is: %s---Room Port: %d---IN SESSION\n%s"
+            ,rm_set[i].qst_in_room, rm_set[i].student_fd,
+            q_set[rm_set[i].qst_in_room].question, rm_set[i].port, DELIM);
+            send(fd, temp, strlen(temp), 0);
+            flag = 1;
+        }
+    }
+    return flag;
 }
