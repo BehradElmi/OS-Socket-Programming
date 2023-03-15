@@ -9,10 +9,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #define SERVER_ADDRESS "127.0.0.1"
 #define SERVER_BROADCAST "127.255.255.255"
-#define DEFAULT_SERVER_PORT 11000
 #define BUFFER_SIZE 1024
 #define RECIEVE_ERROR "Error On Reading From the Server"
 #define CHAT_PATTERN "$$$"
@@ -20,6 +20,10 @@
 #define EXIT_PAT "exit\n"
 #define SO_REUSEPORT 15
 #define EXIT_SIG "$@&^()+$#"
+#define ALARM_PATTERN "@*alarm*@"
+#define TA_TIMEOUT 60
+#define NO_RESPONSE "&NO$REsp*"
+#define NO_RES_MSG "No Response!\nexiting...\n"
 
 int connect_server(int port);
 
@@ -31,27 +35,54 @@ void room_communication(int port, int serverFD);
 
 void spect_opt(int port);
 
-int main(int argc, char* argv)
+static int serFD = 0;
+
+static int flag = 0;
+
+static int DEFAULT_SERVER_PORT;
+
+void my_handler(int sig)
 {
+    send(serFD, NO_RESPONSE, strlen(NO_RESPONSE), 0);
+    write(1, NO_RES_MSG, strlen(NO_RES_MSG));
+    exit(1);
+}
+
+int main(int argc, char** argv)
+{
+    if(argc != 2)
+    {
+        perror("bad argument");
+        exit(1);
+    }
+    DEFAULT_SERVER_PORT = atoi(argv[1]);
     char buffer[BUFFER_SIZE] = {0};
     int client_fd = connect_server(DEFAULT_SERVER_PORT);
+    serFD = client_fd;
+    alarm(0);
+    signal(SIGALRM, my_handler);
     fd_set temp, master_set;
     FD_ZERO(&master_set);
     FD_SET(0, &master_set);
-    FD_SET(client_fd, &master_set); // 3 is client first socket 4 is server sending menu
+    FD_SET(client_fd, &master_set);
     while(1)
     {
         temp = master_set;
-        select(client_fd+1, &temp, NULL, NULL, NULL); // client 3 server 4
+        select(client_fd+1, &temp, NULL, NULL, NULL);
         if(FD_ISSET(0, &temp))
         {
             memset(buffer, 0, sizeof(buffer)/sizeof(buffer[0]));
-            read(0, buffer, BUFFER_SIZE); // Read client inp and Sent to Server
+            read(0, buffer, BUFFER_SIZE); // Read client inp and Send to Server
+            alarm(0);
+            if(flag)
+            {
+                alarm(TA_TIMEOUT);
+            }
             send(client_fd, buffer, strlen(buffer), 0);
         }
         else if(FD_ISSET(3, &temp))
         {
-            // recieve from server
+            // receive from server
             int recieved_bytes = recv(3, buffer, BUFFER_SIZE, 0);
             recieved_handler(buffer, recieved_bytes);
         }
@@ -84,6 +115,14 @@ void recieved_handler(char* buffer, int num_of_bytes)
     else if(num_of_bytes > 0)
     {
         int port = port_pattern(buffer);
+        if(strncmp(ALARM_PATTERN, buffer, strlen(ALARM_PATTERN))
+            == 0)
+        {
+            alarm(0);
+            alarm(TA_TIMEOUT);
+            flag = 1;
+            return;
+        }
         if(port <= 0)
         {
             write(1, buffer, num_of_bytes);
@@ -183,6 +222,10 @@ void room_communication(int port, int serverFD)
     FD_SET(0, &master);
     FD_SET(sock, &master);
     FD_SET(serverFD, &master);
+    if(flag) // inefficient implementation
+    {
+        alarm(TA_TIMEOUT);
+    }
     while(1)
     {
         memset(b_buf, 0, BUFFER_SIZE);
@@ -195,6 +238,11 @@ void room_communication(int port, int serverFD)
         if(FD_ISSET(0, &temp)) // read triggered
         {
             read(0, b_buf, BUFFER_SIZE);
+            alarm(0);
+            if(flag)
+            {
+                alarm(TA_TIMEOUT);
+            }
             if(strcmp(b_buf, EXIT_PAT) == 0)
             {
                 send(serverFD, EXIT_PAT, strlen(EXIT_PAT), 0); // trigger server
@@ -216,6 +264,10 @@ void room_communication(int port, int serverFD)
             if(rch <= 0)
             {
                 perror("recv error");
+            }
+            if(strncmp(NO_RESPONSE, b_buf, strlen(NO_RESPONSE)) == 0)
+            {
+                return;
             }
             write(1, b_buf, strlen(b_buf));
         }
