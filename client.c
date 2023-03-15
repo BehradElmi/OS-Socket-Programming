@@ -114,58 +114,75 @@ void room_communication(int port, int serverFD)
 {
     struct sockaddr_in sock_adr;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if(socket < 0)
+    {
+        perror("error socket");
+    }
     sock_adr.sin_port = htons(port);
     sock_adr.sin_family = AF_INET;
     sock_adr.sin_addr.s_addr = inet_addr(SERVER_BROADCAST);
     int broadcast = 1;
-    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
-        sizeof(broadcast));
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
-        sizeof(broadcast));
+    if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
+        sizeof(broadcast)) < 0)
+        {
+            perror("error setsocketopt broadcast");
+        }
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
+        sizeof(broadcast)) < 0)
+    {
+        perror("error setsocket reuse");
+    }
     if (bind(sock, (const struct sockaddr*) &sock_adr, 
-        (socklen_t)sizeof(sock_adr)) == -1)
+        (socklen_t)sizeof(sock_adr)) < 0)
     {
         perror("error binding");
     }
     char b_buf[BUFFER_SIZE];
     int sock_adr_len = sizeof(sock_adr);
+    memset(b_buf, 0, BUFFER_SIZE);
+    fd_set temp, master;
+    FD_ZERO(&master);
+    FD_SET(0, &master);
+    FD_SET(sock, &master);
     while(1)
     {
         memset(b_buf, 0, BUFFER_SIZE);
-        fd_set temp, master;
-        FD_ZERO(&master);
-        FD_SET(0, &master);
-        FD_SET(sock, &master);
-        while(1)
+        temp = master;
+        if(select(sock+1, &temp, NULL, 
+            NULL, NULL) < 0)
         {
-            temp = master;
-            select(sock+1, &temp, NULL, 
-                NULL, NULL);
-            if(FD_ISSET(0, &temp)) // read triggered
+            perror("socket error");
+        }
+        if(FD_ISSET(0, &temp)) // read triggered
+        {
+            read(0, b_buf, BUFFER_SIZE);
+            if(strcmp(b_buf, EXIT_PAT) == 0)
             {
-                read(0, b_buf, BUFFER_SIZE);
-                if(strcmp(b_buf, EXIT_PAT) == 0)
-                {
-                    send(serverFD, "", sizeof(""), 0);
-                    return;
-                }
-                int sch = sendto(sock, b_buf, strlen(b_buf), 0,
-                 (const struct sockaddr*)&sock_adr,
-                    sizeof(sock_adr));
-                sch = 1;
-            }
-            else if(FD_ISSET(sock, &temp)) // broadcast triggered
-            {
-                int rch = recvfrom(sock, b_buf, strlen(b_buf), 0,
-                (struct sockaddr*) &sock_adr, (socklen_t*)&sock_adr_len);
-                write(1, b_buf, strlen(b_buf));
-                memset(b_buf, 0, BUFFER_SIZE);
-            }
-            else
-            {
-                perror("uknown desc");
+                send(serverFD, "", sizeof(""), 0); // trigger server
                 return;
             }
+            int sch = sendto(sock, b_buf, strlen(b_buf), 0,
+             (const struct sockaddr*)&sock_adr,
+                sizeof(sock_adr));
+            if(sch <= 0)
+            {
+                perror("send problem");
+            }
         }
-    }   
-}
+        else if(FD_ISSET(sock, &temp)) // broadcast triggered
+        {
+            int rch = recvfrom(sock, b_buf, BUFFER_SIZE, 0,
+            (struct sockaddr*) &sock_adr, (socklen_t*)&sock_adr_len);
+            if(rch <= 0)
+            {
+                perror("recv error");
+            }
+            write(1, b_buf, strlen(b_buf));
+        }
+        else
+        {
+            perror("uknown desc");
+            return;
+        }
+    }
+}   
