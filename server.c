@@ -531,8 +531,8 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
         // CLOSE ROOM
         close_question(s_fd, qst_set, rm_set, cli_set);
         send(s_fd, REGISTERED_ANSWER, strlen(REGISTERED_ANSWER), 0);
-        send(s_fd, EXIT_SIG, strlen(EXIT_SIG), 0);
         send(ta_fd, EXIT_SIG, strlen(EXIT_SIG), 0);
+        send(s_fd, EXIT_SIG, strlen(EXIT_SIG), 0);
     }
 }
 
