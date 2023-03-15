@@ -23,6 +23,7 @@
 
 #define DEFAULT_SERVER_PORT 8090
 #define MAX_CLIENT 50
+#define SERVER_BROADCAST "127.255.255.255"
 #define MAX_QUESTION 100
 #define BUFFER_SIZE 1024
 #define QUESTION_LENGTH 256
@@ -54,6 +55,8 @@
 #define NOT_VALID_ROOM "The"
 #define PATTERN "$$$"
 #define NOW_IN_ROOM "You are now in room:\nChat:\n" 
+#define EXIT_PAT "exit\n"
+#define STUDENT_ANSWER "What was the answer to your question?\n"
 
 enum Role
 {
@@ -112,6 +115,8 @@ struct Room
     int port;
     int qst_in_room;
     enum RoomStatus rm_stat;
+    struct sockaddr_in* rm_broadcast;
+    int rm_socket_fd;
 };
 
 typedef struct Question Qst;
@@ -167,6 +172,18 @@ int return_qID_from_fd(int fd, Qst* q_set);
 
 void send_pattern(int s_fd, Qst* q_set, int port);
 
+void setup_room_broadcast(struct sockaddr_in* sockadr, int port, 
+    int sock);
+
+void set_rooms(fd_set* master, Rm* rm_set);
+
+Rm* return_room_from_fd(int fd, Rm* rm_set);
+
+enum Role return_role_from_fd(int fd, Cli* cli_set);
+
+void broadcast_message(Rm* rm_set, Qst* q_set, int fd, const char* buffer, 
+    Cli* cli_set);
+
 static int qID = 0;
 
 int main(int argc, char* argv)
@@ -174,8 +191,8 @@ int main(int argc, char* argv)
     Qst qst_set[MAX_QUESTION];
     Cli client_set[MAX_CLIENT];
     Rm room_set[MAX_ROOM];
-    init_rooms(room_set);
     int serverFD = setup_server(DEFAULT_SERVER_PORT);
+    init_rooms(room_set);
     run_server(serverFD, qst_set, client_set, room_set);
 }   
 
@@ -230,6 +247,7 @@ void run_server(int serverFD, Qst* qst_set, Cli* cli_set,
     write(1, SERVER_UP,(size_t)strlen(SERVER_UP));
     int max_sd = serverFD;
     FD_SET(serverFD, &master_set);
+    set_rooms(&master_set, room_set);
     while(1)
     {
         temp = master_set;
@@ -246,6 +264,10 @@ void run_server(int serverFD, Qst* qst_set, Cli* cli_set,
                     {
                         max_sd = new_socket;
                     }
+                }
+                else if(i > serverFD && i < serverFD+MAX_ROOM)
+                {
+                    break;// DO nothing
                 }
                 else // Listen to Client
                 {
@@ -380,7 +402,17 @@ void TA_handler(int t_fd, Cli* cli_set, Qst* qst_set,
     }
     else if(cli_set[t_fd].usr_stat == IN_TALK)
     {
+        // timer exit parttern
         // give a broadcast room / TIMER
+        if(strcmp(EXIT_PAT, read_buf) == 0)
+        {
+            perror("Undefined: TA exited the room");
+            exit(1);
+        }
+        else
+        {
+            broadcast_message(room_set, qst_set, t_fd, read_buf, cli_set);
+        }
     }
     else if(cli_set[t_fd].usr_stat == QUESTION_ANSWERED)
     {
@@ -448,9 +480,14 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
     }
     else if(cli_set[s_fd].usr_stat == IN_TALK)
     {
-        // +
-        send(s_fd, "are you done?", strlen("are you done?"), 0);
-        // +
+        // room
+        if(strcmp(buffer, EXIT_PAT) == 0)
+        {
+            cli_set[s_fd].usr_stat = QUESTION_ANSWERED;
+            cli_set[return_taf_from_stf(qst_set, s_fd)].usr_stat = QUESTION_ANSWERED;
+            send(s_fd, STUDENT_ANSWER, strlen(STUDENT_ANSWER), 0);
+        }
+        broadcast_message(rm_set, qst_set, s_fd, buffer, cli_set);
     }
     else if(cli_set[s_fd].usr_stat == WATCHING_SESSION)
     {
@@ -459,6 +496,9 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
     else if(cli_set[s_fd].usr_stat == QUESTION_ANSWERED)
     {
         // MENU
+        // CLOSE QUESTION
+        // CLOSE ROOM
+        // SAVE QUESTION AND ANSWER INTO FILE
     }
 }
 
@@ -597,6 +637,39 @@ void init_rooms(Rm* room_set)
         room_set[i].port = DEFAULT_SERVER_PORT + i+1;
         room_set[i].rm_stat = UNUSED;        
         room_set[i].qst_in_room = -1;
+        room_set[i].rm_socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if(room_set[i].rm_socket_fd <= 0)
+        {
+            perror("room socket problem");
+        }
+        room_set[i].rm_broadcast = (struct sockaddr_in*)malloc(
+            sizeof(struct sockaddr_in));
+        setup_room_broadcast(room_set[i].rm_broadcast, room_set[i].port,
+            room_set[i].rm_socket_fd);
+    }
+}
+
+void setup_room_broadcast(struct sockaddr_in* sockadr, int port, 
+    int sock)
+{
+    int broadcast = 1;
+    sockadr->sin_family = AF_INET;
+    sockadr->sin_port = htons(port);
+    sockadr->sin_addr.s_addr = inet_addr(SERVER_BROADCAST);
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
+        sizeof(broadcast)))
+    {
+        perror("set room socket problem");
+    }
+    if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
+        sizeof(broadcast)))
+    {
+        perror("set room socket problem");
+    }
+    if(bind(sock, (const struct sockaddr*)sockadr,
+         sizeof(*sockadr)))
+    {
+        perror("error binding room");
     }
 }
 
@@ -663,11 +736,67 @@ int return_qID_from_fd(int fd, Qst* q_set)
     return -1;
 }
 
-
 void send_pattern(int s_fd, Qst* q_set, int port)
 {
     char pat[100];
     sprintf(pat, "%s%d", PATTERN, port);
     send(s_fd, pat, strlen(pat), 0);
     send(return_taf_from_stf(q_set, s_fd), pat, strlen(pat), 0);
+}
+
+void set_rooms(fd_set* master, Rm* rm_set)
+{
+    for(int i = 0; i < MAX_ROOM; i++)
+    {
+        FD_SET(rm_set[i].rm_socket_fd, master);
+    }
+}
+
+Rm* return_room_from_fd(int fd, Rm* rm_set)
+{
+    Rm* room;
+    for(int i = 0; i < MAX_ROOM; i++)
+    {
+        if(rm_set[i].student_fd == fd || rm_set[i].ta_fd == fd)
+        {
+            room = &rm_set[i];
+            return room;
+        }
+    }
+    return NULL;
+}
+
+enum Role return_role_from_fd(int fd, Cli* cli_set)
+{
+    for(int i = 0; i < MAX_CLIENT; i++)
+    {
+        if(cli_set[i].user_fd == fd)
+        {
+            return cli_set[i].usr_type;
+        }
+    }
+}
+
+void broadcast_message(Rm* rm_set, Qst* q_set, int fd, const char* buffer, 
+    Cli* cli_set)
+{
+    Rm* broadcast_room = return_room_from_fd(fd, rm_set);
+    char b_message[BUFFER_SIZE+20];
+    memset(b_message, 0, BUFFER_SIZE+20);
+    enum Role fd_role = return_role_from_fd(fd, cli_set);
+    if(fd_role == STUDENT)
+    {
+        sprintf(b_message, "Student#%d said: %s", fd, buffer);
+    }
+    else if(fd_role == TA)
+    {
+        sprintf(b_message, "TA#%d said: %s", fd, buffer);
+    }
+    else
+    {
+        perror("not legal");
+    }
+    sendto(broadcast_room->rm_socket_fd, b_message, strlen(b_message),
+        0, (const struct sockaddr*) broadcast_room->rm_broadcast,
+        (socklen_t)sizeof(*broadcast_room));
 }
