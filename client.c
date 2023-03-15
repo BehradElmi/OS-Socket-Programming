@@ -19,6 +19,7 @@
 #define SPECT_PATTERN "&&&"
 #define EXIT_PAT "exit\n"
 #define SO_REUSEPORT 15
+#define EXIT_SIG "$@&^()+$#"
 
 int connect_server(int port);
 
@@ -95,10 +96,12 @@ void recieved_handler(char* buffer, int num_of_bytes)
              == 0)
             {
                 room_communication(port, 3);
+                return;
             }
             else
             {
                 spect_opt(port);
+                return;
             }   
         }
     }
@@ -131,6 +134,10 @@ int port_pattern(const char* buffer)
         char* stoken = strtok(stemp, SPECT_PATTERN);
         int spport = atoi(stoken); 
         return spport;
+    }
+    if(strncmp(EXIT_SIG, buffer, strlen(EXIT_SIG)) == 0)
+    {
+        exit(1);
     }
     return 0;
 }
@@ -238,7 +245,7 @@ void spect_opt(int port)
     if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast,
         sizeof(broadcast)) < 0)
     {
-            perror("error setsocketopt broadcast");
+        perror("error setsocketopt broadcast");
     }
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &broadcast,
         sizeof(broadcast)) < 0)
