@@ -21,7 +21,6 @@
 // setup a room
 // broadcast
 
-#define DEFAULT_SERVER_PORT 11000
 #define MAX_CLIENT 50
 #define SERVER_BROADCAST "127.255.255.255"
 #define MAX_QUESTION 100
@@ -64,8 +63,8 @@
 #define LOG_FILE "log.txt"
 #define REGISTERED_ANSWER "Your Answer has been Registered\n"
 #define EXIT_SIG "$@&^()+$#"
-
-
+#define ALARM_PATTERN "@*alarm*@"
+#define NO_RESPONSE "&NO$REsp*"
 
 enum Role
 {
@@ -179,9 +178,8 @@ int return_taf_from_stf(Qst* q_set, int sfd);
 
 int return_qID_from_fd(int fd, Qst* q_set);
 
-void send_pattern(int s_fd, Qst* q_set, int port,
+void send_port_with_pattern(int fd, Qst* q_set, int port,
     const char* pattern);
-
 void setup_room_broadcast(struct sockaddr_in* sockadr, int port, 
     int sock);
 
@@ -201,10 +199,23 @@ void register_answer(const char* buffer, int s_fd, Qst* q_set);
 void close_question(int s_fd, Qst* q_set, Rm* rm_set,
     Cli* cli_set);
 
+int return_sf_from_tf(int tf, Qst* q_set);
+
+void no_question_ta(int t_fd, Rm* rm_set, Qst* q_set,
+    Cli* cli_set);
+
 static int qID = 0;
 
-int main(int argc, char* argv)
+static int DEFAULT_SERVER_PORT;
+
+int main(int argc, char** argv)
 {
+    if(argc != 2)
+    {
+        perror("bad argument");
+        exit(1);
+    }
+    DEFAULT_SERVER_PORT = atoi(argv[1]);
     Qst qst_set[MAX_QUESTION];
     Cli client_set[MAX_CLIENT];
     Rm room_set[MAX_ROOM];
@@ -418,12 +429,21 @@ void TA_handler(int t_fd, Cli* cli_set, Qst* qst_set,
     }
     else if(cli_set[t_fd].usr_stat == IN_TALK)
     {
-        // timer exit parttern
-        // give a broadcast room / TIMER
         if(strcmp(EXIT_PAT, read_buf) == 0)
         {
             perror("Undefined: TA exited the room");
             exit(1);
+        }
+        else if(strncmp(read_buf, NO_RESPONSE, strlen(NO_RESPONSE)) == 0)
+        {
+            // CLOSE QUESTION AND NOTIFY everyone in room
+            int s_fd = return_sf_from_tf(t_fd, qst_set);
+            Rm* broadcast_room = return_room_from_fd(t_fd, room_set);
+            sendto(broadcast_room->rm_socket_fd, read_buf, strlen(read_buf),
+                0, (const struct sockaddr*) broadcast_room->rm_broadcast,
+                (socklen_t)sizeof(*broadcast_room));
+            no_question_ta(t_fd, room_set, qst_set, cli_set);
+            send(s_fd, STUDENT_WAIT, strlen(STUDENT_WAIT), 0);
         }
         else
         {
@@ -491,15 +511,20 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
         }
         else
         {
+            int ta_fd = return_taf_from_stf(qst_set, s_fd);
+            send(ta_fd, ALARM_PATTERN, strlen(ALARM_PATTERN), 0);
+            sleep(0.3);
             send(s_fd, NOW_IN_ROOM, strlen(NOW_IN_ROOM), 0);
-            send(return_taf_from_stf(qst_set, s_fd), NOW_IN_ROOM,
-                strlen(NOW_IN_ROOM), 0);
-            sleep(1);
-            send_pattern(s_fd, qst_set, check_room, CHAT_PATTERN);
-            send_pattern(return_taf_from_stf(qst_set, s_fd), 
-                qst_set, check_room, CHAT_PATTERN);
+            sleep(0.3);
+            send(ta_fd, NOW_IN_ROOM, strlen(NOW_IN_ROOM), 0);
+            sleep(0.3);
+            send_port_with_pattern(s_fd, qst_set, check_room, 
+                CHAT_PATTERN);
+            sleep(0.3);
+            send_port_with_pattern(ta_fd, qst_set, check_room, 
+                CHAT_PATTERN);
             cli_set[s_fd].usr_stat = IN_TALK;
-            cli_set[return_taf_from_stf(qst_set, s_fd)].usr_stat = IN_TALK;
+            cli_set[ta_fd].usr_stat = IN_TALK;
         }
     }
     else if(cli_set[s_fd].usr_stat == IN_TALK)
@@ -521,7 +546,7 @@ void student_handler(int s_fd, Cli* cli_set, Qst* qst_set,
             perror("bad port");
             return; // needs more error checking
         }
-        send_pattern(s_fd, qst_set, chosen_port, SPECT_PATTERN);
+        send_port_with_pattern(s_fd, qst_set, chosen_port, SPECT_PATTERN);
     }
     else if(cli_set[s_fd].usr_stat == QUESTION_ANSWERED)
     {
@@ -754,13 +779,12 @@ int return_qID_from_fd(int fd, Qst* q_set)
     return -1;
 }
 
-void send_pattern(int s_fd, Qst* q_set, int port,
+void send_port_with_pattern(int fd, Qst* q_set, int port,
     const char* pattern)
 {
     char pat[100];
     sprintf(pat, "%s%d", pattern, port);
-    send(s_fd, pat, strlen(pat), 0);
-    send(return_taf_from_stf(q_set, s_fd), pat, strlen(pat), 0);
+    send(fd, pat, strlen(pat), 0);
 }
 
 void set_rooms(fd_set* master, Rm* rm_set)
@@ -868,4 +892,31 @@ void close_question(int s_fd, Qst* q_set, Rm* rm_set,
     cli_set[s_fd].usr_stat = QUESTION_ANSWERED;
     cli_set[return_taf_from_stf(q_set, s_fd)].usr_stat =
         QUESTION_ANSWERED;
+}
+
+int return_sf_from_tf(int tf, Qst* q_set)
+{
+    for (int i = 0; i < MAX_QUESTION; i++)
+    {
+        if(tf == q_set[i].ta_fd)
+        {
+            return q_set[i].st_fd;
+        }
+    }
+    return 0;
+}
+
+void no_question_ta(int t_fd, Rm* rm_set, Qst* q_set,
+    Cli* cli_set)
+{
+    int s_fd = return_sf_from_tf(t_fd, q_set);
+    Rm* in_room = return_room_from_fd(s_fd, rm_set);
+    int qst_id = return_qID_from_fd(s_fd, q_set);
+    cli_set[s_fd].usr_stat = AWAIT_RESPONSE;
+    in_room->qst_in_room = -1;
+    in_room->rm_stat = UNUSED;
+    in_room->student_fd = -1;
+    in_room->ta_fd = -1;
+    q_set[qst_id].q_stat = NOT_CHOSEN;
+    q_set[qst_id].ta_fd = -1;
 }
