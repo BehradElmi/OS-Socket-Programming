@@ -21,7 +21,7 @@
 // setup a room
 // broadcast
 
-#define DEFAULT_SERVER_PORT 8090
+#define DEFAULT_SERVER_PORT 10000
 #define MAX_CLIENT 50
 #define SERVER_BROADCAST "127.255.255.255"
 #define MAX_QUESTION 100
@@ -93,8 +93,8 @@ enum RoomStatus
 
 struct Question
 {
-    char* question;
-    char* answer;
+    char question[QUESTION_LENGTH];
+    char answer[QUESTION_LENGTH];
     int st_fd;
     int ta_fd;
     enum QstStatus q_stat;
@@ -511,7 +511,7 @@ void add_question_set(const char* buffer,int cli_fd, Qst* qst_set)
     // send(cli_fd, temp, strlen(temp), 0);
     // +
     qst_set[qID].qst_id = qID;
-    qst_set[qID].answer = NULL;
+    memset(qst_set[qID].answer, 0, QUESTION_LENGTH);
     qst_set[qID].st_fd = cli_fd;
     qst_set[qID].ta_fd = -1;
     qst_set[qID].q_stat = NOT_CHOSEN;
@@ -547,8 +547,8 @@ int show_question_set(int client_fd, Qst* qst_set)
         {
             if(qst_set[i].q_stat == NOT_CHOSEN)
             {    
-                char each_question[QUESTION_LENGTH];
-                memset(each_question, 0, sizeof(each_question)/sizeof(each_question));
+                char each_question[QUESTION_LENGTH+50];
+                memset(each_question, 0, QUESTION_LENGTH+50);
                 sprintf(each_question, "Question #%d:\n%s\nStudent:#%d\n%s",
                     qst_set[i].qst_id, qst_set[i].question, qst_set[i].st_fd,
                     DELIM);
